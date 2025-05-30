@@ -1,25 +1,20 @@
 /*
- * Ultimate Discord Selfbot: 24/7 Live DASH Streamer (Enhanced)
+ * Ultimate Discord Selfbot: 24/7 Live DASH Streamer (No .env)
  * Features:
  *  - Selfbot login with user token and cookie support
  *  - Dynamic VC selection and switching via DM (only for owner)
  *  - Resilient voice connection with auto-reconnect
  *  - Auto-restart on audio or connection failures
- *  - DM commands: setvc/switchvc, start, stop, restart, reconnect, volume, status, info, help
+ *  - DM commands: setvc/switchvc, setstream, start, stop, restart, reconnect, volume, status, info, help
  *  - Graceful shutdown and cleanup
- *  - Env-configurable defaults and intervals
+ *  - Configuration via top constants or DM (no environment variables)
  *
  * Installation:
- *   npm install discord.js @discordjs/voice ffmpeg-static dotenv tough-cookie fetch-cookie
+ *   npm install discord.js @discordjs/voice ffmpeg-static tough-cookie node-fetch fetch-cookie
  *
  * Usage:
- *   - Create a .env file with:
- *       DISCORD_USER_TOKEN=your_token
- *       OWNER_ID=your_user_id
- *       DEFAULT_VOICE_CHANNEL_ID=<optional default vc id>
- *       STREAM_URL=https://example.com/stream.mpd
- *       RECONNECT_INTERVAL=30000            # ms
- *       FF_RESTART_DELAY=5000               # ms
+ *   - Edit the constants below for USER_TOKEN and OWNER_ID
+ *   - Optionally set DEFAULT_VOICE_CHANNEL_ID and STREAM_URL here, or use DM commands
  *   - Run: node index.js
  */
 
@@ -35,27 +30,27 @@ import {
 } from '@discordjs/voice';
 import ffmpeg from 'ffmpeg-static';
 import { spawn } from 'child_process';
-import dotenv from 'dotenv';
 import { CookieJar } from 'tough-cookie';
 import fetch from 'node-fetch';
 import fetchCookie from 'fetch-cookie';
 
-dotenv.config();
+// === Configuration Constants ===
+const USER_TOKEN = 'MTE3OTM0MjE3NzYwNDc0NzI5OA.GNAM7J.VPz_bJHYxQzW5wbv3qikG8yauS3XsyGdf5LQ7w';    // Replace with your user token
+const OWNER_ID = '819859725142851604';           // Replace with your Discord user ID
+let currentVoiceChannelId = 'OPTIONAL_DEFAULT_VC_ID';
+let STREAM_URL = 'https://tv.nknews.org/tvdash/stream.mpd';
+const RECONNECT_INTERVAL = 30_000;  // ms
+const FF_RESTART_DELAY = 5_000;     // ms
 
-// Configurable
-const USER_TOKEN = process.env.DISCORD_USER_TOKEN;
-const OWNER_ID = process.env.OWNER_ID;
-let currentVoiceChannelId = process.env.DEFAULT_VOICE_CHANNEL_ID || null;
-const STREAM_URL = process.env.STREAM_URL;
-const RECONNECT_INTERVAL = Number(process.env.RECONNECT_INTERVAL) || 30_000;
-const FF_RESTART_DELAY = Number(process.env.FF_RESTART_DELAY) || 5_000;
-
-// Setup cookie-based fetch
+// Setup cookie-based fetch (if needed for authenticated streams)
 const jar = new CookieJar();
 const fetchWithCookie = fetchCookie(fetch, jar);
 
 // Discord client
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: ['CHANNEL'] });
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages],
+  partials: ['CHANNEL']
+});
 let audioPlayer;
 let connection;
 let ffmpegProcess;
@@ -98,6 +93,7 @@ async function connectVoice() {
   }
 }
 
+// Setup audio player and event handlers
 function setupPlayer() {
   if (!connection) return;
   if (!audioPlayer) {
@@ -114,12 +110,17 @@ function setupPlayer() {
   connection.subscribe(audioPlayer);
 }
 
+// Start the FFmpeg->Discord stream pipeline
 function startStream() {
   if (!connection) return;
   if (ffmpegProcess) ffmpegProcess.kill('SIGKILL');
 
   console.log('Starting stream:', STREAM_URL);
-  ffmpegProcess = spawn(ffmpeg, ['-re', '-i', STREAM_URL, '-analyzeduration', '0', '-loglevel', '0', '-acodec', 'libopus', '-f', 'opus', 'pipe:1']);
+  ffmpegProcess = spawn(ffmpeg, [
+    '-re', '-i', STREAM_URL,
+    '-analyzeduration', '0', '-loglevel', '0',
+    '-acodec', 'libopus', '-f', 'opus', 'pipe:1'
+  ]);
 
   ffmpegProcess.on('exit', (code, sig) => {
     console.warn(`FFmpeg exited (${code||sig}); restarting in ${FF_RESTART_DELAY}ms`);
@@ -132,6 +133,7 @@ function startStream() {
   isStreaming = true;
 }
 
+// Stop and clean up streaming
 function stopStream() {
   if (ffmpegProcess) ffmpegProcess.kill('SIGKILL');
   if (audioPlayer) audioPlayer.stop();
@@ -141,14 +143,13 @@ function stopStream() {
   console.log('Streaming stopped');
 }
 
+// Restart streaming pipeline
 function restartStream() {
   stopStream();
-  connectVoice().then(() => {
-    startStream();
-  });
+  connectVoice().then(() => startStream());
 }
 
-// DM command handling
+// Handle DM commands from owner
 client.on(Events.MessageCreate, async msg => {
   if (msg.channel.type !== 'DM' || msg.author.id !== OWNER_ID) return;
   const args = msg.content.trim().split(/\s+/);
@@ -163,6 +164,14 @@ client.on(Events.MessageCreate, async msg => {
         await msg.reply('Switching VC...');
         await connectVoice();
         startStream();
+      }
+      break;
+    case 'setstream':
+      STREAM_URL = args[0];
+      msg.reply(`Stream URL set to ${STREAM_URL}`);
+      if (isStreaming) {
+        msg.reply('Restarting stream with new URL...');
+        restartStream();
       }
       break;
     case 'start':
@@ -202,13 +211,14 @@ client.on(Events.MessageCreate, async msg => {
     case 'help':
       msg.reply(
         'Commands:\n' +
-        'setvc/switchvc <id> - Choose voice channel and switch\n' +
+        'setvc/switchvc <id> - Set voice channel\n' +
+        'setstream <url> - Set DASH stream URL\n' +
         'start - Connect and start streaming\n' +
-        'stop - Stop streaming and disconnect\n' +
-        'restart - Restart stream pipeline\n' +
-        'reconnect - Reconnect voice connection\n' +
+        'stop - Stop streaming\n' +
+        'restart - Restart streaming pipeline\n' +
+        'reconnect - Reconnect to VC\n' +
         'volume <0-2> - Set volume\n' +
-        'status - Show current status\n' +
+        'status - Show status\n' +
         'info - Show config info\n' +
         'help - List commands'
       );
@@ -226,7 +236,9 @@ process.on('SIGINT', async () => {
 });
 
 // Login selfbot
-client.login(USER_TOKEN).then(() => console.log('Selfbot online')).catch(err => {
-  console.error('Login error:', err);
-  process.exit(1);
-});
+client.login(USER_TOKEN)
+  .then(() => console.log('Selfbot online'))
+  .catch(err => {
+    console.error('Login error:', err);
+    process.exit(1);
+  });
