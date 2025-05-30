@@ -1,0 +1,2 @@
+npm init -y
+npm install discord.js @discordjs/voice ffmpeg-static dotenv tough-cookie fetch-cookie
